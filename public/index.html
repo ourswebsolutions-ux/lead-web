@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Subscriptions · Axora Web Solutions</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="top">
+    <div class="wrap top-inner">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">A</span>
+        <div>
+          <strong>Axora Web Solutions</strong>
+          <span>Subscription management</span>
+        </div>
+      </div>
+      <span class="count" id="count" aria-live="polite"></span>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+
+    <section class="card">
+      <h2>Add user</h2>
+      <form id="add-form" class="add-form" novalidate>
+        <label>
+          <span>User ID</span>
+          <input name="id" required minlength="3" maxlength="64" pattern="[A-Za-z0-9_\-]{3,64}" autocomplete="off" spellcheck="false" placeholder="Lead Getter Device ID">
+        </label>
+        <label>
+          <span>Email</span>
+          <input name="email" type="email" required maxlength="254" autocomplete="off" placeholder="customer@example.com">
+        </label>
+        <button type="submit" class="btn primary">Add user</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <div class="list-head">
+        <h2>Users</h2>
+        <input id="search" type="search" placeholder="Search by email or user ID" aria-label="Search by email or user ID" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>User ID</th><th>Email</th><th>Status</th><th>Expires</th><th class="right">Actions</th></tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <p id="empty" class="empty" hidden></p>
+    </section>
+  </main>
+
+  <dialog id="activate">
+    <form id="activate-form" method="dialog" novalidate>
+      <h2>Activate subscription</h2>
+      <p class="muted" id="activate-user"></p>
+      <label>
+        <span>Duration</span>
+        <select name="duration">
+          <option value="1">1 month</option>
+          <option value="6">6 months</option>
+          <option value="12">1 year</option>
+          <option value="custom">Custom expiry date</option>
+          <option value="never">No expiry (lifetime)</option>
+        </select>
+      </label>
+      <label>
+        <span>Expiry date</span>
+        <input name="date" type="date" required>
+      </label>
+      <p class="muted small" id="activate-preview"></p>
+      <p class="notice error" id="activate-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn" id="activate-cancel">Cancel</button>
+        <button type="submit" class="btn primary">Activate</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

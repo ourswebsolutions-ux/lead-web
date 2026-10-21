@@ -1,0 +1,45 @@
+// Users and their subscription (one row each, 1:1). All times are UTC.
+//
+// users.id is the user ID shared with the Lead Getter desktop app (its Device
+// ID). Device IDs are case-sensitive base64url, so the id columns use the
+// ascii_bin collation. Prisma can't express column collations, so they are
+// set in the migration SQL (prisma/migrations/*_init/migration.sql).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+enum SubscriptionStatus {
+  inactive
+  active
+  suspended
+}
+
+model User {
+  id           String        @id @db.VarChar(64)
+  email        String        @unique(map: "users_email_unique") @db.VarChar(254)
+  createdAt    DateTime      @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime      @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  subscription Subscription?
+
+  @@map("users")
+}
+
+model Subscription {
+  userId      String             @id @map("user_id") @db.VarChar(64)
+  status      SubscriptionStatus @default(inactive)
+  // NULL while active means the subscription never expires.
+  expiresAt   DateTime?          @map("expires_at") @db.DateTime(3)
+  activatedAt DateTime?          @map("activated_at") @db.DateTime(3)
+  suspendedAt DateTime?          @map("suspended_at") @db.DateTime(3)
+  updatedAt   DateTime           @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "subscriptions_user_fk")
+
+  @@index([status, expiresAt], map: "subscriptions_status")
+  @@map("subscriptions")
+}
