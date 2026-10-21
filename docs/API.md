@@ -125,7 +125,7 @@ All errors are JSON:
 
 ## Database schema (MySQL / MariaDB)
 
-Defined in [prisma/schema.prisma](../prisma/schema.prisma) and created by [prisma/migrations/20261021000000_init/migration.sql](../prisma/migrations/20261021000000_init/migration.sql); applied migrations are recorded by Prisma in `_prisma_migrations`.
+Defined in [prisma/schema.prisma](../prisma/schema.prisma) and created with `npx prisma db push`. The `ascii_bin` collation on the two ID columns is applied once with [prisma/case-sensitive-ids.sql](../prisma/case-sensitive-ids.sql), since Prisma can't express collations.
 
 ```sql
 users (
@@ -141,7 +141,6 @@ subscriptions (
   suspended_at  DATETIME(3) NULL,
   updated_at    DATETIME(3)
 )
-_prisma_migrations (managed by Prisma)
 ```
 
 An access check for a user ID, if read directly from the database:

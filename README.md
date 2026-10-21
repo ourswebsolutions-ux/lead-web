@@ -12,42 +12,27 @@ API reference, status values, database schema and the Lead Getter integration no
 ## Project layout
 
 ```
-src/server.js     startup: env → database → migrations → HTTP
-src/app.js        routes, validation, error handling
-src/auth.js       admin authorization (Basic / Bearer), CSRF and brute-force protection
-src/users.js      (Prisma) user and subscription queries
-prisma/           schema.prisma and migrations (prisma migrate)
-scripts/migrate.js  npm run migrate: prisma migrate deploy (+ baseline of older databases)
-public/           the admin page (HTML, CSS, JS; no secrets)
-test/             API tests against a real MySQL database
+src/server.js              startup: env → database connection → HTTP (port 3060)
+src/app.js                 routes, validation, error handling
+src/auth.js                admin authorization (Basic / Bearer), CSRF and brute-force protection
+src/users.js               user and subscription queries (Prisma)
+prisma/schema.prisma       database schema (applied with prisma db push)
+prisma/seed.js             initial user (npx prisma db seed)
+prisma/case-sensitive-ids.sql  optional one-time fix: case-sensitive user IDs
+ecosystem.config.js        PM2 process definition
+public/                    the admin page (HTML, CSS, JS; no secrets)
+test/                      API tests against a real MySQL database
 ```
 
 ## Security
 
 - **No login page.** The whole site, page included, is protected with HTTP Basic auth checked on the server; the browser shows its own sign-in prompt once. Scripts can use `Authorization: Bearer <ADMIN_API_TOKEN>`.
-- Credentials and database settings exist only in server environment variables. The page's JavaScript contains no secrets and calls the API with the browser's same-origin credentials.
+- **The admin account is not stored in the database.** It is `ADMIN_USERNAME` / `ADMIN_PASSWORD` in the environment, compared on the server in constant time. The `users` table holds customers (user ID + email) and has no passwords.
+- Credentials and database settings exist only in server environment variables (`.env`, never committed). The page's JavaScript contains no secrets. Logged errors have the database password removed.
 - Basic-authorized changes must come from the site's own origin (CSRF protection); 10 failed sign-ins lock an IP out for 15 minutes; strict Content-Security-Policy, `X-Frame-Options: DENY`, `no-store` caching, `noindex`.
 - **Serve it over HTTPS only** — Basic auth sends the password with every request.
 
-## Local development
-
-Requires Node.js 20+ and a MySQL 5.7+/8 or MariaDB 10.3+ database.
-
-```bash
-npm install
-npm install               # also runs prisma generate
-cp .env.example .env      # fill in DATABASE_URL, ADMIN_USERNAME, ADMIN_PASSWORD
-npm run migrate           # optional: start also migrates when MIGRATE_ON_START=true
-npm start                 # http://localhost:3000
-```
-
-Tests (drop and recreate the tables in the database you give them, so use an empty, separate one):
-
-```bash
-TEST_DATABASE_URL=mysql://user:pass@127.0.0.1:3306/axora_subs_test npm test
-```
-
-## Environment variables
+## Environment variables (`.env`)
 
 | Variable | Required | Example | Purpose |
 |---|---|---|---|
@@ -55,70 +40,69 @@ TEST_DATABASE_URL=mysql://user:pass@127.0.0.1:3306/axora_subs_test npm test
 | `ADMIN_USERNAME` | yes | `admin` | Admin sign-in |
 | `ADMIN_PASSWORD` | yes | 12+ random characters | Admin sign-in |
 | `ADMIN_API_TOKEN` | no | 64 hex characters | Bearer token for scripts (32+ characters) |
-| `PORT`, `HOST` | no | `3000`, `0.0.0.0` | Listen address |
+| `PORT`, `HOST` | no | `3060`, `0.0.0.0` | Listen address (`HOST=127.0.0.1` if only the reverse proxy should reach it) |
 | `PUBLIC_ORIGIN` | no | `https://subscription.axorawebsolutions.com` | Allowed origin for changes |
-| `TRUST_PROXY` | behind a proxy | `1` | Real client IP / HTTPS detection behind cPanel, nginx, Cloudflare |
-| `MIGRATE_ON_START` | no | `true` | Run `prisma migrate deploy` at startup |
+| `TRUST_PROXY` | behind a proxy | `1` | Real client IP / HTTPS detection behind nginx, cPanel, Cloudflare |
+| `SEED_USER_ID`, `SEED_USER_EMAIL` | for the seed | `Ab3_-xY9…`, `owner@example.com` | Initial user created by `npx prisma db seed` |
 
-Variables set by the hosting panel take precedence over `.env`.
+Copy `.env.example` to `.env` and fill it in. Variables set by the hosting environment take precedence over `.env`.
 
-## Deployment
+## Deployment (PM2)
 
-### 1. Database (on your hosting)
+Requires Node.js 20+, PM2 (`npm install -g pm2`), and a MySQL 5.7+/8 or MariaDB 10.3+ database whose user has `SELECT, INSERT, UPDATE, DELETE` (plus `CREATE, ALTER, INDEX, REFERENCES` for `db push`).
 
-1. In cPanel → **MySQL Databases** (or your host's equivalent), create a database, e.g. `axora_subs`, and a user with a strong password.
-2. Add the user to the database with **ALL PRIVILEGES** (the migrations need `CREATE`, `ALTER`, `INDEX`, `REFERENCES`; the app then needs `SELECT`, `INSERT`, `UPDATE`, `DELETE`).
-3. Note the host (usually `localhost` when the app runs on the same hosting), port `3306`, user, password and database name. cPanel prefixes names with your account name, e.g. `cpuser_axora_subs`.
-
-### 2a. cPanel hosting with "Setup Node.js App"
-
-1. Create the subdomain `subscription.axorawebsolutions.com` (cPanel → **Domains**), and issue an SSL certificate for it (**SSL/TLS Status** → AutoSSL).
-2. Upload this folder (without `node_modules` and `.env`) to e.g. `~/subscription.axorawebsolutions.com`.
-3. cPanel → **Setup Node.js App** → **Create Application**:
-   - Node.js version: 20 or newer
-   - Application mode: Production
-   - Application root: `subscription.axorawebsolutions.com`
-   - Application URL: `subscription.axorawebsolutions.com`
-   - Application startup file: `src/server.js`
-4. Add the environment variables from the table above (at least the database settings, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `TRUST_PROXY=1`). Alternatively create `.env` in the application root and `chmod 600 .env`.
-5. Click **Run NPM Install** (this also generates the Prisma Client), then **Restart**. Pending migrations are applied on start (or run `npm run migrate` from the app's virtual-environment shell shown at the top of the page).
-6. Force HTTPS: cPanel → **Domains** → turn on **Force HTTPS Redirect** for the subdomain.
-
-### 2b. VPS (systemd + nginx)
+First deployment:
 
 ```bash
-# as the deploy user, Node.js 20+ installed
-git clone <this repo> /srv/axora-subscriptions && cd /srv/axora-subscriptions
-npm ci --omit=dev        # prisma is a runtime dependency; postinstall generates the client
-cp .env.example .env && chmod 600 .env   # fill in; HOST=127.0.0.1, TRUST_PROXY=1
-npm run migrate
+cd /path/to/subcription.axorawebsolutions.com
+npm install                  # also runs prisma generate
+cp .env.example .env && chmod 600 .env   # fill in
+npx prisma db push           # creates/updates the tables from prisma/schema.prisma
+npx prisma db seed           # once: creates SEED_USER_ID / SEED_USER_EMAIL if missing
+pm2 start ecosystem.config.js
+pm2 save                     # restore on reboot (after `pm2 startup` once)
 ```
 
-`/etc/systemd/system/axora-subscriptions.service`:
+Updates:
 
-```ini
-[Unit]
-Description=Axora subscription management
-After=network.target mysql.service
-
-[Service]
-User=www-data
-WorkingDirectory=/srv/axora-subscriptions
-ExecStart=/usr/bin/node src/server.js
-Restart=always
-Environment=NODE_ENV=production
-
-[Install]
-WantedBy=multi-user.target
+```bash
+git pull
+npm install                  # also runs prisma generate
+npx prisma db push           # only when prisma/schema.prisma changed
+pm2 restart axora-subscriptions
 ```
 
-nginx (`certbot --nginx -d subscription.axorawebsolutions.com` adds HTTPS):
+- **Startup never changes the database schema.** It only connects; if the tables are missing or the database is unreachable, the error is in `pm2 logs axora-subscriptions`.
+- `npx prisma db push` compares `prisma/schema.prisma` with the database and applies only the difference. If a change would lose data, Prisma stops and asks; **don't** pass `--accept-data-loss` or `--force-reset` on the production database.
+- The seed is safe to re-run: it creates nothing if a user with that ID or email already exists. Leave `SEED_USER_*` empty and it does nothing.
+- npm scripts with the same commands: `npm run db:generate`, `npm run db:push`, `npm run seed`, `npm start`.
+
+### Case-sensitive user IDs (one-time, recommended)
+
+Lead Getter device IDs are case-sensitive. Prisma can't express column collations, so `db push` creates `users.id` and `subscriptions.user_id` case-insensitive. To fix that once (collation change only; no rows are touched; `db push` keeps it afterwards):
+
+```bash
+pm2 stop axora-subscriptions
+mysql -u USER -p DB_NAME < prisma/case-sensitive-ids.sql
+pm2 start axora-subscriptions
+```
+
+Check the result (both should be `ascii_bin`):
+
+```sql
+SELECT table_name, column_name, collation_name FROM information_schema.columns
+WHERE table_schema = DATABASE() AND column_name IN ('id', 'user_id');
+```
+
+### Reverse proxy (nginx)
+
+`certbot --nginx -d subscription.axorawebsolutions.com` adds HTTPS:
 
 ```nginx
 server {
   server_name subscription.axorawebsolutions.com;
   location / {
-    proxy_pass http://127.0.0.1:3000;
+    proxy_pass http://127.0.0.1:3060;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
@@ -126,26 +110,22 @@ server {
 }
 ```
 
-```bash
-sudo systemctl enable --now axora-subscriptions
-```
+Keep `TRUST_PROXY=1` so client IPs (rate limiting) and HTTPS (HSTS) are detected through the proxy.
 
-### 3. DNS
-
-Point `subscription.axorawebsolutions.com` (A record, or the subdomain cPanel created) at the hosting server.
-
-### 4. Check
+### Check
 
 1. Open `https://subscription.axorawebsolutions.com` — the browser asks for the admin username and password.
 2. Add a test user, activate, suspend and delete it.
 3. Without credentials, `curl -i https://subscription.axorawebsolutions.com/api/v1/users` must return `401`.
 
-### Database migrations
-
-- Migrations live in `prisma/migrations/` and are applied with `prisma migrate deploy` (via `npm run migrate`, or automatically on start). This never resets or drops data, and needs no shadow database or `CREATE DATABASE` privilege.
-- **Upgrading a database created by the previous (pre-Prisma) version:** `npm run migrate` detects its `schema_migrations` table and marks the identical init migration as applied (`prisma migrate resolve`) without running any SQL, so existing users and subscriptions are untouched. The old `schema_migrations` table is left in place and can be dropped by hand afterwards. A database with any other unrecognised `users` table is refused, unchanged.
-- **Changing the schema:** edit `prisma/schema.prisma`, then create a migration on a development database, e.g. `npx prisma migrate dev --name add_x` (needs a user allowed to create a shadow database), review the SQL, and deploy it with `npm run migrate`. Keep the `ascii_bin` collation on the `id`/`user_id` columns: Prisma can't express it, and Lead Getter device IDs are case-sensitive.
-
 ### Backups
 
-All data is in the two MySQL tables `users` and `subscriptions`; include the database in your hosting backups (or `mysqldump axora_subs users subscriptions _prisma_migrations`).
+All data is in the MySQL tables `users` and `subscriptions`; include the database in your hosting backups (or `mysqldump DB_NAME users subscriptions`).
+
+## Tests
+
+The tests create the schema with `prisma db push` and **drop all tables** in the database they are given, so use an empty, separate database:
+
+```bash
+TEST_DATABASE_URL=mysql://user:pass@127.0.0.1:3306/axora_subs_test npm test
+```

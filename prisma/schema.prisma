@@ -1,9 +1,10 @@
 // Users and their subscription (one row each, 1:1). All times are UTC.
 //
 // users.id is the user ID shared with the Lead Getter desktop app (its Device
-// ID). Device IDs are case-sensitive base64url, so the id columns use the
-// ascii_bin collation. Prisma can't express column collations, so they are
-// set in the migration SQL (prisma/migrations/*_init/migration.sql).
+// ID). Device IDs are case-sensitive base64url, so the id columns should use
+// the ascii_bin collation. Prisma can't express column collations, and
+// `prisma db push` creates them case-insensitive: run
+// prisma/case-sensitive-ids.sql once after the first push (see README).
 
 generator client {
   provider = "prisma-client-js"

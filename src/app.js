@@ -151,4 +151,4 @@ function createApp({ config, users, now = () => new Date(), logger = console }) 
   return app;
 }
 
-module.exports = { createApp };
+module.exports = { createApp, ID_RE, EMAIL_RE };

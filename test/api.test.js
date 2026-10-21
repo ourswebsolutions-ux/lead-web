@@ -6,22 +6,21 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { loadConfig } = require('../src/config');
 const fs = require('node:fs');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 const { PrismaClient } = require('@prisma/client');
-const { migrate, redact } = require('../scripts/migrate');
+const { loadConfig, redact } = require('../src/config');
 const { Users } = require('../src/users');
 const { createApp } = require('../src/app');
+const { seed } = require('../prisma/seed');
 
 const DB_URL = process.env.TEST_DATABASE_URL;
 const ADMIN = { ADMIN_USERNAME: 'admin', ADMIN_PASSWORD: 'correct-horse-battery', ADMIN_API_TOKEN: 't'.repeat(40) };
 const BASIC = `Basic ${Buffer.from('admin:correct-horse-battery').toString('base64')}`;
 const BEARER = `Bearer ${'t'.repeat(40)}`;
 const DEVICE_ID = 'Ab3_-xY9Ab3_-xY9Ab3_-xY9Ab3_-xY9'; // Lead Getter-style device ID
-
-const INIT_SQL = fs.readFileSync(path.join(__dirname, '..', 'prisma', 'migrations', '20261021000000_init', 'migration.sql'), 'utf8');
-const sqlStatements = (text) => text.split('\n').filter((l) => !l.trim().startsWith('--')).join('\n').split(/;\s*(?:\n|$)/).map((x) => x.trim()).filter(Boolean);
+const ROOT = path.join(__dirname, '..');
 
 async function dropAll(prisma) {
   await prisma.$executeRawUnsafe('SET FOREIGN_KEY_CHECKS = 0');
@@ -29,7 +28,21 @@ async function dropAll(prisma) {
   await prisma.$executeRawUnsafe('SET FOREIGN_KEY_CHECKS = 1');
 }
 
-test('config: DATABASE_URL is required and checked', () => {
+// The deployment flow: `prisma db push`, then prisma/case-sensitive-ids.sql.
+async function createSchema(prisma) {
+  await dropAll(prisma);
+  execFileSync(process.execPath, [require.resolve('prisma/build/index.js'), 'db', 'push', '--skip-generate'], {
+    cwd: ROOT,
+    env: { ...process.env, DATABASE_URL: DB_URL, PRISMA_HIDE_UPDATE_MESSAGE: '1' },
+    stdio: 'ignore',
+  });
+  const sql = fs.readFileSync(path.join(ROOT, 'prisma', 'case-sensitive-ids.sql'), 'utf8');
+  const statements = sql.split('\n').filter((l) => !l.trim().startsWith('--')).join('\n').split(/;\s*(?:\n|$)/).map((x) => x.trim()).filter(Boolean);
+  for (const statement of statements) await prisma.$executeRawUnsafe(statement);
+}
+
+test('config: DATABASE_URL is required and checked, port defaults to 3060', () => {
+  assert.equal(loadConfig({ ...ADMIN, DATABASE_URL: 'mysql://u:p@h/d' }).port, 3060);
   const a = loadConfig({ ...ADMIN, DATABASE_URL: 'mysql://u%40x:p%3Ass@db.example.com:3307/subs' });
   assert.equal(a.databaseUrl, 'mysql://u%40x:p%3Ass@db.example.com:3307/subs');
   assert.throws(() => loadConfig({ ...ADMIN }), /Missing environment variable: DATABASE_URL/);
@@ -46,33 +59,48 @@ test('redact hides the database password, plain and URL-encoded', () => {
   assert.equal(redact('failed for p@ss!w0rd and p%40ss%21w0rd', url), 'failed for *** and ***');
 });
 
-test('migrations: baseline a database created by the previous version, keeping its data', { skip: !DB_URL && 'set TEST_DATABASE_URL to run' }, async () => {
+test('seed creates the initial user once, never a duplicate', { skip: !DB_URL && 'set TEST_DATABASE_URL to run' }, async () => {
+  const prisma = new PrismaClient({ datasourceUrl: DB_URL });
+  const logs = [];
+  const log = (m) => logs.push(m);
+  try {
+    await createSchema(prisma);
+    assert.deepEqual(await seed({ prisma, id: '', email: '', log }), { created: false }, 'nothing configured: no-op');
+    await assert.rejects(seed({ prisma, id: 'a b', email: 'x@example.com', log }), /SEED_USER_ID/);
+    await assert.rejects(seed({ prisma, id: 'seed-user', email: 'nope', log }), /SEED_USER_EMAIL/);
+    assert.deepEqual(await seed({ prisma, id: 'seed-user', email: ' Owner@Example.com ', log }), { created: true });
+    const user = await prisma.user.findUnique({ where: { id: 'seed-user' }, include: { subscription: true } });
+    assert.equal(user.email, 'owner@example.com');
+    assert.equal(user.subscription.status, 'inactive');
+    // Re-running, or the same email under another ID, creates nothing.
+    assert.deepEqual(await seed({ prisma, id: 'seed-user', email: 'owner@example.com', log }), { created: false });
+    assert.deepEqual(await seed({ prisma, id: 'other-id', email: 'OWNER@example.com', log }), { created: false });
+    // Existing data is left untouched.
+    await prisma.subscription.update({ where: { userId: 'seed-user' }, data: { status: 'active', expiresAt: null } });
+    await seed({ prisma, id: 'seed-user', email: 'owner@example.com', log });
+    assert.equal((await prisma.subscription.findUnique({ where: { userId: 'seed-user' } })).status, 'active');
+    assert.equal(await prisma.user.count(), 1);
+  } finally {
+    await dropAll(prisma);
+    await prisma.$disconnect();
+  }
+});
+
+test('seed command runs through prisma db seed, without printing secrets', { skip: !DB_URL && 'set TEST_DATABASE_URL to run' }, async () => {
   const prisma = new PrismaClient({ datasourceUrl: DB_URL });
   try {
-    await dropAll(prisma);
-    // Recreate exactly what the old SQL migration runner left behind, with data.
-    for (const sql of sqlStatements(INIT_SQL)) await prisma.$executeRawUnsafe(sql);
-    await prisma.$executeRawUnsafe('CREATE TABLE schema_migrations (version VARCHAR(255) NOT NULL PRIMARY KEY, applied_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3))');
-    await prisma.$executeRawUnsafe("INSERT INTO schema_migrations (version) VALUES ('001_create_users_and_subscriptions.sql')");
-    await prisma.$executeRawUnsafe("INSERT INTO users (id, email) VALUES ('legacy-user', 'legacy@example.com')");
-    await prisma.$executeRawUnsafe("INSERT INTO subscriptions (user_id, status, expires_at, activated_at) VALUES ('legacy-user', 'active', '2027-01-01 00:00:00', '2026-10-01 00:00:00')");
-    const logs = [];
-    assert.deepEqual(await migrate({ databaseUrl: DB_URL, log: (m) => logs.push(m) }), []);
-    assert.match(logs.join(), /baselined/);
-    const user = await prisma.user.findUnique({ where: { id: 'legacy-user' }, include: { subscription: true } });
-    assert.equal(user.email, 'legacy@example.com');
-    assert.equal(user.subscription.status, 'active');
-    assert.equal(user.subscription.expiresAt.toISOString(), '2027-01-01T00:00:00.000Z');
-    const done = await prisma.$queryRaw`SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL`;
-    assert.deepEqual(done.map((r) => r.migration_name), ['20261021000000_init']);
-    assert.deepEqual(await migrate({ databaseUrl: DB_URL, log: () => {} }), [], 'second run changes nothing');
-
-    // An unrecognised existing schema is left alone.
-    await dropAll(prisma);
-    await prisma.$executeRawUnsafe('CREATE TABLE users (id INT PRIMARY KEY)');
-    await assert.rejects(migrate({ databaseUrl: DB_URL, log: () => {} }), /not created by this app/);
-    const cols = await prisma.$queryRaw`SELECT column_name AS c FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = 'users'`;
-    assert.deepEqual(cols.map((r) => r.c), ['id']);
+    await createSchema(prisma);
+    const run = () =>
+      execFileSync(process.execPath, [require.resolve('prisma/build/index.js'), 'db', 'seed'], {
+        cwd: ROOT,
+        env: { ...process.env, DATABASE_URL: DB_URL, SEED_USER_ID: 'cli-seed', SEED_USER_EMAIL: 'cli@example.com', PRISMA_HIDE_UPDATE_MESSAGE: '1' },
+        encoding: 'utf8',
+      });
+    assert.match(run(), /created user cli-seed/);
+    assert.match(run(), /already exists; nothing created/);
+    assert.equal(await prisma.user.count(), 1);
+    const password = new URL(DB_URL).password;
+    if (password) assert.ok(!run().includes(password));
   } finally {
     await dropAll(prisma);
     await prisma.$disconnect();
@@ -82,9 +110,7 @@ test('migrations: baseline a database created by the previous version, keeping i
 test('API against MySQL', { skip: !DB_URL && 'set TEST_DATABASE_URL to run' }, async (t) => {
   const config = loadConfig({ ...ADMIN, DATABASE_URL: DB_URL, PUBLIC_ORIGIN: 'https://subscription.axorawebsolutions.com' });
   const prisma = new PrismaClient({ datasourceUrl: DB_URL });
-  await dropAll(prisma);
-  assert.deepEqual(await migrate({ databaseUrl: DB_URL, log: () => {} }), ['20261021000000_init']);
-  assert.deepEqual(await migrate({ databaseUrl: DB_URL, log: () => {} }), [], 'second run applies nothing');
+  await createSchema(prisma);
 
   let clock = new Date('2026-10-21T12:00:00Z');
   const errors = [];
