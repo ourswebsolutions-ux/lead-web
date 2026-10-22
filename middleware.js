@@ -1,6 +1,9 @@
-// Admin login for everything except /lead-getter, which belongs to the
-// desktop app (authenticated there by its own device signature, never by
-// the admin login). Also sets the security headers for the dashboard.
+// Admin login for everything except:
+//   /lead-getter    the desktop app's API (authenticated there by its own
+//                   device signature, never by the admin login);
+//   /download       the public download page and its installer links, plus
+//                   the static files pages need (/_next/static, /icon.svg).
+// Also sets the security headers for the pages.
 
 import { NextResponse } from 'next/server';
 import { loadConfig } from './lib/config.js';
@@ -14,20 +17,25 @@ function requireAdmin(request) {
   return auth(request);
 }
 
-const isLicencePath = (p) => p === '/lead-getter' || p.startsWith('/lead-getter/');
+const under = (p, base) => p === base || p.startsWith(`${base}/`);
+const isLicencePath = (p) => under(p, '/lead-getter');
+const isPublicPage = (p) => under(p, '/download');
+const isPublicAsset = (p) => p.startsWith('/_next/static/') || p === '/icon.svg';
 
 export function middleware(request) {
   const { pathname } = request.nextUrl;
-  if (isLicencePath(pathname)) return NextResponse.next();
+  if (isLicencePath(pathname) || isPublicAsset(pathname)) return NextResponse.next();
 
-  let denied;
-  try {
-    denied = requireAdmin(request);
-  } catch (err) {
-    console.error(`[config] ${err.message}`);
-    return new Response('The server is not configured (see the server log).', { status: 503, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
+  if (!isPublicPage(pathname)) {
+    let denied;
+    try {
+      denied = requireAdmin(request);
+    } catch (err) {
+      console.error(`[config] ${err.message}`);
+      return new Response('The server is not configured (see the server log).', { status: 503, headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' } });
+    }
+    if (denied) return denied;
   }
-  if (denied) return denied;
 
   // Per-request nonce: Next.js adds it to its own scripts.
   const nonce = Buffer.from(crypto.randomUUID()).toString('base64');
