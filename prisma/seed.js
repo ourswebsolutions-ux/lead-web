@@ -1,5 +1,3 @@
-'use strict';
-
 // npx prisma db seed (or npm run seed) — creates the initial user once.
 //
 // Creates the user given by SEED_USER_ID and SEED_USER_EMAIL, with an
@@ -8,12 +6,14 @@
 //
 // The users table holds customers (user ID + email) and has no password. The
 // admin sign-in is not stored in the database: it is ADMIN_USERNAME and
-// ADMIN_PASSWORD in the environment, checked by src/auth.js.
+// ADMIN_PASSWORD in the environment, checked by lib/auth.js.
 
-const { PrismaClient } = require('@prisma/client');
-const { loadEnvFile } = require('../src/env');
-const { redact } = require('../src/config');
-const { ID_RE, EMAIL_RE } = require('../src/app');
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { PrismaClient } from '@prisma/client';
+import { redact } from '../lib/config.js';
+import { ID_RE, EMAIL_RE } from '../lib/validation.js';
 
 async function seed({ prisma, id, email, log = console.log }) {
   id = (id || '').trim();
@@ -44,10 +44,10 @@ async function seed({ prisma, id, email, log = console.log }) {
   return { created: true };
 }
 
-module.exports = { seed };
+export { seed };
 
-if (require.main === module) {
-  loadEnvFile();
+if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
+  if (fs.existsSync('.env')) process.loadEnvFile('.env');
   const prisma = new PrismaClient();
   seed({ prisma, id: process.env.SEED_USER_ID, email: process.env.SEED_USER_EMAIL })
     .catch((err) => {

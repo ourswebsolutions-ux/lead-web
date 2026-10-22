@@ -44,3 +44,109 @@ model Subscription {
   @@index([status, expiresAt], map: "subscriptions_status")
   @@map("subscriptions")
 }
+
+// --- Lead Getter licence system (served at /lead-getter) --------------------
+// Same data as the former standalone licence server's SQLite tables
+// (devices, applications, action_tokens, trials, seen_requests), plus the
+// persisted status-signing key. Device IDs are case-sensitive, like users.id
+// (prisma/case-sensitive-ids.sql). Times are UTC.
+
+enum LicenceApplicationStatus {
+  pending
+  approved
+  cancelled
+}
+
+enum LicenceTokenAction {
+  approve
+  cancel
+  verify_email
+}
+
+model LicenceDevice {
+  id           String               @id @db.VarChar(64)
+  publicKey    String               @map("public_key") @db.VarChar(255)
+  createdAt    DateTime             @map("created_at") @db.DateTime(3)
+  lastSeenAt   DateTime             @map("last_seen_at") @db.DateTime(3)
+  applications LicenceApplication[]
+
+  @@map("licence_devices")
+}
+
+model LicenceApplication {
+  // Insertion order; breaks created_at ties like the original's seq.
+  seq              Int                      @id @default(autoincrement())
+  id               String                   @unique(map: "licence_applications_id_unique") @db.VarChar(20)
+  deviceId         String                   @map("device_id") @db.VarChar(64)
+  plan             String                   @db.VarChar(32)
+  message          String                   @db.Text
+  email            String?                  @db.VarChar(254)
+  emailVerified    Boolean                  @default(false) @map("email_verified")
+  screenshotPath   String?                  @map("screenshot_path") @db.VarChar(255)
+  screenshotType   String                   @map("screenshot_type") @db.VarChar(32)
+  screenshotSize   Int                      @map("screenshot_size")
+  screenshotSha256 String                   @map("screenshot_sha256") @db.Char(64)
+  status           LicenceApplicationStatus
+  createdAt        DateTime                 @map("created_at") @db.DateTime(3)
+  decidedAt        DateTime?                @map("decided_at") @db.DateTime(3)
+  device           LicenceDevice            @relation(fields: [deviceId], references: [id], onDelete: Restrict, onUpdate: Restrict, map: "licence_applications_device_fk")
+  tokens           LicenceActionToken[]
+
+  @@index([deviceId, createdAt], map: "licence_applications_device")
+  @@index([status, createdAt], map: "licence_applications_status")
+  @@map("licence_applications")
+}
+
+model LicenceActionToken {
+  // sha256 of the emailed token; the token itself is never stored.
+  hash          String             @id @db.Char(64)
+  applicationId String             @map("application_id") @db.VarChar(20)
+  action        LicenceTokenAction
+  createdAt     DateTime           @map("created_at") @db.DateTime(3)
+  expiresAt     DateTime           @map("expires_at") @db.DateTime(3)
+  usedAt        DateTime?          @map("used_at") @db.DateTime(3)
+  application   LicenceApplication @relation(fields: [applicationId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "licence_action_tokens_application_fk")
+
+  @@index([applicationId], map: "licence_action_tokens_app")
+  @@map("licence_action_tokens")
+}
+
+// Free searches per computer (hashed machine id, or "device:<id>").
+model LicenceTrial {
+  machineId String   @id @map("machine_id") @db.VarChar(80)
+  used      Int      @default(0)
+  updatedAt DateTime @map("updated_at") @db.DateTime(3)
+
+  @@map("licence_trials")
+}
+
+// Replay protection: each request signature is accepted once.
+model LicenceSeenRequest {
+  sigHash   String @id @map("sig_hash") @db.Char(64)
+  expiresAt BigInt @map("expires_at")
+
+  @@index([expiresAt], map: "licence_seen_requests_expiry")
+  @@map("licence_seen_requests")
+}
+
+// The Ed25519 key that signs licence status. Installed apps trust only its
+// public key, so it is stored once and never replaced (lib/licence/keys.js).
+model LicenceSigningKey {
+  id            String   @id @db.VarChar(16)
+  privateKeyPem String   @map("private_key_pem") @db.Text
+  publicKey     String   @map("public_key") @db.VarChar(128)
+  source        String   @db.VarChar(255)
+  createdAt     DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  @@map("licence_signing_keys")
+}
+
+// One-time setup steps already done (e.g. importing an earlier licence
+// server's data), so they never run twice.
+model AppSetting {
+  key       String   @id @db.VarChar(191)
+  value     String   @db.Text
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
+
+  @@map("app_settings")
+}

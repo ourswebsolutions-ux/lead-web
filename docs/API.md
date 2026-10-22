@@ -4,14 +4,9 @@ Base URL: `https://subscription.axorawebsolutions.com/api/v1`
 
 ## Authorization
 
-Every route (and the admin page) requires one of:
+Every `/api/v1` route (and the dashboard) requires the admin login as HTTP Basic auth: `Authorization: Basic base64(ADMIN_USERNAME:ADMIN_PASSWORD)`. The browser asks for it once and sends it automatically.
 
-| Method | Header | Used by |
-|---|---|---|
-| HTTP Basic | `Authorization: Basic base64(ADMIN_USERNAME:ADMIN_PASSWORD)` | The admin page (the browser prompts once and sends it automatically) |
-| Bearer token | `Authorization: Bearer <ADMIN_API_TOKEN>` | Scripts and server-side tools |
-
-- Basic-authorized `POST`, `PATCH` and `DELETE` requests must come from the site's own origin (`PUBLIC_ORIGIN`); cross-site requests get `403 forbidden_origin`. Bearer requests are not origin-checked.
+- `POST`, `PATCH` and `DELETE` requests must come from the site's own origin (`PUBLIC_ORIGIN`); cross-site requests get `403 forbidden_origin`.
 - After 10 failed attempts from one IP, that IP gets `429 too_many_attempts` for 15 minutes.
 - These are **administrative** credentials. They must never be embedded in the desktop app or any other client that customers can inspect: anyone holding them can activate, suspend or delete every subscription.
 
@@ -101,6 +96,19 @@ Response:
 
 Errors: `400 invalid_status`, `400 expiry_required`, `400 invalid_expiry`, `400 expiry_in_past`, `400 unexpected_expiry`, `400 user_id_mismatch` (an `id` in the body differs from the URL), `400 invalid_user_id`, `404 user_not_found`.
 
+### Payment applications (Lead Getter)
+
+The dashboard's "Payment approvals" list. Approving or cancelling here is the same decision as the Approve/Cancel buttons in the emailed request (each application is decided once).
+
+| Route | Answer |
+|---|---|
+| `GET /applications[?status=pending\|approved\|cancelled]` | `{ "applications": [ { id, deviceId, plan, planName, priceLabel, email, emailVerified, message, status, createdAt, decidedAt, hasScreenshot, user } ], "count" }` (`user`: the device's user here, or `null`) |
+| `GET /applications/:id/screenshot` | The payment screenshot (PNG/JPEG/WebP) |
+| `POST /applications/:id/approve` | `{ "application": { … } }`; activates the device's subscription (registering it with the application's email if needed). Monthly/Six Months count from now, or from the current end date when renewing early; Lifetime never expires. |
+| `POST /applications/:id/cancel` | `{ "application": { … } }`; nothing is activated |
+
+Errors: `404 application_not_found`, `409 already_processed`, `409 not_activated` (no email, or the email belongs to another user), `503 not_activated` (database unavailable).
+
 ## Errors
 
 All errors are JSON:
@@ -125,7 +133,7 @@ All errors are JSON:
 
 ## Database schema (MySQL / MariaDB)
 
-Defined in [prisma/schema.prisma](../prisma/schema.prisma) and created with `npx prisma db push`. The `ascii_bin` collation on the two ID columns is applied once with [prisma/case-sensitive-ids.sql](../prisma/case-sensitive-ids.sql), since Prisma can't express collations.
+Defined in [prisma/schema.prisma](../prisma/schema.prisma) and created by `npm run build` / `npm run dev` ([prisma/setup.js](../prisma/setup.js), additions only). The ID columns use the case-sensitive `ascii_bin` collation, which setup applies since Prisma can't express collations. The desktop API's tables (`licence_devices`, `licence_applications`, `licence_action_tokens`, `licence_trials`, `licence_seen_requests`, `licence_signing_keys`) and `app_settings` are described in the schema file.
 
 ```sql
 users (
@@ -150,20 +158,21 @@ SELECT status = 'active' AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP(3
 FROM subscriptions WHERE user_id = ?;
 ```
 
-## Lead Getter integration
+## Lead Getter desktop API (`/lead-getter`)
 
-The Lead Getter desktop app never calls the `/api/v1` routes above (they need admin credentials, which must never ship inside an app). It talks to the **Lead Getter licence server** (lead-getter repository, `server/`), served at:
+Served by this app at `https://subscription.axorawebsolutions.com/lead-getter` (installed apps' `license-config.json`), with the same routes, requests, answers, messages and signed payloads as the former standalone Lead Getter licence server. No admin login: every device request is signed with the device's own Ed25519 key.
 
-`https://subscription.axorawebsolutions.com/lead-getter`
-
-| Desktop call (no admin credentials) | Purpose | Protection (licence server) |
+| Desktop call | Purpose | Protection |
 |---|---|---|
-| `GET /lead-getter/api/plans` | Plan list | Public, read-only |
-| `GET /lead-getter/api/license?nonce=…` | The device's own subscription status, as a server-signed token | Ed25519 device signature, ±5 min timestamp, single-use nonce; a device only ever sees its own status |
-| `POST /lead-getter/api/trial/consume` | One of 3 free searches | Device signature; counted per computer |
-| `POST /lead-getter/api/applications` | Apply with payment screenshot (registers the device here as an **inactive** user) | Device signature; 10 per device per day; image type/size checked |
-| `GET/POST /lead-getter/admin/applications/:id/approve` (emailed link) | Administrator approves → activates here | Single-use, expiring token from the admin email |
+| `GET /lead-getter/health` | `{"ok":true}` | Public |
+| `GET /lead-getter/api/plans` | `{ plans, paymentMethods, paymentInstructions, trialSearches }` | Public, read-only |
+| `GET /lead-getter/api/license?nonce=…` | `{ "token": … }`: the device's own status, signed by the server (`v, deviceId, nonce, serverTime, subscription, registration, application, pendingApplications, trial`) | Device signature (`x-lf-key`, `x-lf-ts` ±5 min, `x-lf-nonce`, `x-lf-machine`, `x-lf-sig`); each signature accepted once |
+| `POST /lead-getter/api/trial/consume` | One of 3 free searches per computer (`402` when used up) | Device signature |
+| `POST /lead-getter/api/applications` | Apply with a payment screenshot; emails the administrator; registers the device here as an **inactive** user | Device signature; 10 per device per day; PNG/JPEG/WebP ≤ 5 MB |
+| `GET/POST /lead-getter/admin/applications/:id/approve\|cancel`, `…/screenshot`, `/lead-getter/verify-email` | Emailed links | Single-use, expiring tokens |
 
-The licence server uses this site's API server-to-server with `Authorization: Bearer <ADMIN_API_TOKEN>` (its `SUBSCRIPTION_API_TOKEN`) to look up a device (`GET /users?search=`), register it (`POST /users`, never changing an existing user; an email already used by another device is refused) and activate it on approval (`PATCH /users/:id/subscription`). Suspending a user here takes effect at the device's next status check.
+Errors are `{ "error": "<message>" }` (JSON) under `/lead-getter/api/`, HTML pages elsewhere, exactly as before.
 
-**Routing.** nginx's `location /lead-getter/` (lead-getter `server/deploy/nginx-lead-getter.conf`) sends these requests to the licence server (port 8787). Requests for `/lead-getter/*` that reach this app instead are forwarded to `LEAD_GETTER_UPSTREAM` (default `http://127.0.0.1:8787`) without this site's admin login, and without any `Authorization` or `Cookie` header. Every other path on this site keeps the admin login. If the licence server is down, `/lead-getter/*` answers `502 { "error": { "code": "licence_server_unavailable" } }`.
+**Status values** in the signed token's `subscription.state`: `active`, `expired`, `suspended`, `inactive` (registered, not activated), `none` (not registered) — this site's `effectiveStatus` for that Device ID. Suspending or activating a user here takes effect at the device's next status check.
+
+**Signing key.** Installed apps only accept a status signed with the key matching the public key in their `license-config.json` (`MCowBQYDK2VwAyEAJqP+z5ZlpDVYDMLWlgGAcf6+H01wGWAiP2Rs5CpUlZY=`). Setup finds that key automatically, verifies it and stores it in the database; it never generates or replaces one. Without it, `/lead-getter/api/license` answers `503 {"error":"Subscriptions are temporarily unavailable on the server. Please try again later."}` and the log says why; plans and health keep working.

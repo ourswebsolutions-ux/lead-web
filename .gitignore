@@ -1,2 +1,5 @@
 node_modules/
 .env
+.next/
+# Payment screenshots (UPLOAD_DIR) and other runtime data
+data/

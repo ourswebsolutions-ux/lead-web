@@ -3,12 +3,14 @@
   "version": "1.0.0",
   "private": true,
   "description": "Subscription management for Axora Web Solutions (subscription.axorawebsolutions.com).",
-  "main": "src/server.js",
   "engines": {
-    "node": ">=20"
+    "node": ">=20.12"
   },
   "scripts": {
-    "start": "node src/server.js",
+    "dev": "node prisma/setup.js && next dev -p 3060",
+    "build": "prisma generate && node prisma/setup.js && next build",
+    "start": "next start -p 3060",
+    "setup": "node prisma/setup.js",
     "postinstall": "prisma generate",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
@@ -17,10 +19,14 @@
   },
   "dependencies": {
     "@prisma/client": "6.19.3",
-    "express": "5.1.0",
-    "prisma": "6.19.3"
+    "next": "15.5.28",
+    "nodemailer": "7.0.13",
+    "prisma": "6.19.3",
+    "react": "19.1.10",
+    "react-dom": "19.1.10"
   },
   "prisma": {
     "seed": "node prisma/seed.js"
-  }
+  },
+  "type": "module"
 }
