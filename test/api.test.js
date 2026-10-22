@@ -337,3 +337,99 @@ test('database outage returns 503 without leaking details', async () => {
     await prisma.$disconnect();
   }
 });
+
+// /lead-getter/* is forwarded to the Lead Getter licence server without the
+// admin login; everything else keeps it. A stand-in upstream records requests.
+test('/lead-getter is forwarded to the licence server without admin auth; admin routes stay protected', async (t) => {
+  const http = require('node:http');
+  const seen = [];
+  const upstream = http.createServer((req, res) => {
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      const body = Buffer.concat(chunks);
+      seen.push({ method: req.method, url: req.url, headers: req.headers, size: body.length });
+      res.writeHead(req.url.includes('missing') ? 404 : 200, { 'content-type': 'application/json', 'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'", 'set-cookie': 'x=1', 'x-licence': 'yes' });
+      res.end(JSON.stringify({ plans: [{ id: 'monthly' }], echo: req.url }));
+    });
+  });
+  upstream.listen(0, '127.0.0.1');
+  await new Promise((r) => upstream.once('listening', r));
+  const start = async (extra) => {
+    const config = loadConfig({ ...ADMIN, DATABASE_URL: 'mysql://u:p@127.0.0.1:1/db', ...extra });
+    const s = createApp({ config, users: {}, logger: { error: () => {} } }).listen(0, '127.0.0.1');
+    await new Promise((r) => s.once('listening', r));
+    t.after(() => s.close());
+    return `http://127.0.0.1:${s.address().port}`;
+  };
+  const base = await start({ LEAD_GETTER_UPSTREAM: `http://127.0.0.1:${upstream.address().port}` });
+  t.after(() => upstream.close());
+
+  await t.test('desktop routes need no admin credentials and pass through unchanged', async () => {
+    let r = await fetch(`${base}/lead-getter/api/plans`);
+    assert.equal(r.status, 200);
+    assert.equal(r.headers.get('www-authenticate'), null);
+    assert.equal(r.headers.get('x-licence'), 'yes');
+    assert.deepEqual((await r.json()).plans, [{ id: 'monthly' }]);
+    // The licence server's own CSP is kept (its pages need inline styles), and it can't set cookies on this site.
+    assert.equal(r.headers.get('content-security-policy'), "default-src 'none'; style-src 'unsafe-inline'");
+    assert.equal(r.headers.get('set-cookie'), null);
+
+    r = await fetch(`${base}/lead-getter/api/license?nonce=abcdefghijklmnop`, { headers: { 'x-lf-key': 'K', 'x-lf-sig': 'S', 'x-lf-ts': '1', 'x-lf-nonce': 'N' } });
+    assert.equal(r.status, 200);
+    const last = seen.at(-1);
+    assert.equal(last.url, '/lead-getter/api/license?nonce=abcdefghijklmnop', 'full path and query, as with the nginx location');
+    assert.deepEqual([last.headers['x-lf-key'], last.headers['x-lf-sig'], last.headers['x-lf-ts'], last.headers['x-lf-nonce']], ['K', 'S', '1', 'N'], 'device signature headers intact');
+    assert.ok(last.headers['x-forwarded-for']);
+
+    const big = Buffer.alloc(6 * 1024 * 1024, 'a'); // a payment screenshot application, base64 ≈ 6.7 MB
+    r = await fetch(`${base}/lead-getter/api/applications`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: big });
+    assert.equal(r.status, 200);
+    assert.deepEqual([seen.at(-1).method, seen.at(-1).size], ['POST', big.length]);
+
+    r = await fetch(`${base}/lead-getter/missing`);
+    assert.equal(r.status, 404, 'upstream status passed through');
+  });
+
+  await t.test('admin credentials and cookies are never forwarded', async () => {
+    await fetch(`${base}/lead-getter/api/plans`, { headers: { authorization: BASIC, cookie: 'session=1' } });
+    assert.equal(seen.at(-1).headers.authorization, undefined);
+    assert.equal(seen.at(-1).headers.cookie, undefined);
+    await fetch(`${base}/lead-getter/api/plans`, { headers: { authorization: BEARER } });
+    assert.equal(seen.at(-1).headers.authorization, undefined);
+  });
+
+  await t.test('everything else still requires admin authorization', async () => {
+    const before = seen.length;
+    for (const p of ['/', '/index.html', '/app.js', '/api/v1/users', '/lead-getterx', '/lead-getter-admin/api/plans', '/api/lead-getter/plans']) {
+      const r = await fetch(base + p);
+      assert.equal(r.status, 401, p);
+    }
+    for (const [m, p] of [['POST', '/api/v1/users'], ['DELETE', '/api/v1/users/abc'], ['PATCH', '/api/v1/users/abc/subscription']]) {
+      assert.equal((await fetch(base + p, { method: m })).status, 401, `${m} ${p}`);
+    }
+    assert.equal(seen.length, before, 'none of these reached the licence server');
+    // A dot-segment path is not a way into the admin API: it stays with the licence server.
+    const raw = await new Promise((resolve) => {
+      const u = new URL(base);
+      http.get({ hostname: u.hostname, port: u.port, path: '/lead-getter/../api/v1/users' }, (res) => {
+        let d = '';
+        res.on('data', (c) => (d += c)).on('end', () => resolve({ status: res.statusCode, body: d }));
+      });
+    });
+    assert.ok(!raw.body.includes('"users"'), 'no admin data');
+  });
+
+  await t.test('licence server down: a clear 502, not a login prompt', async () => {
+    const down = await start({ LEAD_GETTER_UPSTREAM: 'http://127.0.0.1:1' });
+    const r = await fetch(`${down}/lead-getter/api/plans`);
+    assert.equal(r.status, 502);
+    assert.equal(r.headers.get('www-authenticate'), null);
+    assert.equal((await r.json()).error.code, 'licence_server_unavailable');
+  });
+
+  await t.test('LEAD_GETTER_UPSTREAM=off restores the previous behaviour', async () => {
+    const off = await start({ LEAD_GETTER_UPSTREAM: 'off' });
+    assert.equal((await fetch(`${off}/lead-getter/api/plans`)).status, 401);
+  });
+});

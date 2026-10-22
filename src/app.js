@@ -7,11 +7,15 @@
 //   DELETE /api/v1/users/:id                 delete a user and their subscription
 //   PATCH  /api/v1/users/:id/subscription    { status: 'active', expiresAt } | { status: 'suspended' }
 //
-// Everything, the page included, requires admin authorization (src/auth.js).
+// Everything, the page included, requires admin authorization (src/auth.js),
+// except /lead-getter/*: that belongs to the Lead Getter licence server and is
+// forwarded to it (src/lead-getter.js), which authenticates the desktop app's
+// requests itself.
 
 const path = require('node:path');
 const express = require('express');
 const { createAuth } = require('./auth');
+const { createLeadGetterProxy } = require('./lead-getter');
 
 const ID_RE = /^[A-Za-z0-9_-]{3,64}$/;
 const EMAIL_RE = /^[^\s@<>()",;:]{1,64}@[^\s@<>()",;:]{1,189}\.[a-z]{2,24}$/i;
@@ -39,6 +43,10 @@ function createApp({ config, users, now = () => new Date(), logger = console }) 
   app.disable('x-powered-by');
   app.set('trust proxy', config.trustProxy);
   app.set('etag', false);
+
+  // Before the admin login and this site's headers: the licence server sets
+  // its own (its approval pages need their own CSP).
+  if (config.leadGetterUpstream) app.use('/lead-getter', createLeadGetterProxy({ upstream: config.leadGetterUpstream, logger }));
 
   app.use((req, res, next) => {
     res.set({

@@ -150,27 +150,20 @@ SELECT status = 'active' AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP(3
 FROM subscriptions WHERE user_id = ?;
 ```
 
-## Lead Getter integration — findings and current gap
+## Lead Getter integration
 
-I inspected the Lead Getter code (`chrom-lead`, repository `ourswebsolutions-ux/lead-getter`) without changing it. What it actually does today:
+The Lead Getter desktop app never calls the `/api/v1` routes above (they need admin credentials, which must never ship inside an app). It talks to the **Lead Getter licence server** (lead-getter repository, `server/`), served at:
 
-**User ID.** The desktop app identifies itself only by a **Device ID**: a 32-character, case-sensitive base64url string derived from the app installation's own Ed25519 key (`src/main/license.js`, `deviceId`). It sends no email or other user ID. The app UI does not display the Device ID; it appears as **"Device ID"** in the subscription request email that Lead Getter's licence server sends to the administrator. Use that value as the `id` when adding the user here.
+`https://subscription.axorawebsolutions.com/lead-getter`
 
-**What the desktop calls.** It talks to the licence server set in `src/main/license-config.json` (`serverUrl`, currently `http://127.0.0.1:8787`) and trusts only responses signed with that file's `publicKey`:
+| Desktop call (no admin credentials) | Purpose | Protection (licence server) |
+|---|---|---|
+| `GET /lead-getter/api/plans` | Plan list | Public, read-only |
+| `GET /lead-getter/api/license?nonce=…` | The device's own subscription status, as a server-signed token | Ed25519 device signature, ±5 min timestamp, single-use nonce; a device only ever sees its own status |
+| `POST /lead-getter/api/trial/consume` | One of 3 free searches | Device signature; counted per computer |
+| `POST /lead-getter/api/applications` | Apply with payment screenshot (registers the device here as an **inactive** user) | Device signature; 10 per device per day; image type/size checked |
+| `GET/POST /lead-getter/admin/applications/:id/approve` (emailed link) | Administrator approves → activates here | Single-use, expiring token from the admin email |
 
-| Desktop call | Purpose |
-|---|---|
-| `GET /api/license?nonce=…` | Subscription status. The request is signed with the device key (`x-lf-key`, `x-lf-ts`, `x-lf-nonce`, `x-lf-machine`, `x-lf-sig`); the response is `{ "token": … }`, an Ed25519-signed payload with `subscription.state` = `none` / `active` / `expired`, `expiresAt`, the nonce and server time |
-| `POST /api/trial/consume` | Counts one of 3 free searches |
-| `POST /api/applications` | Subscription application with payment screenshot |
-| `GET /api/plans` | Plan list |
+The licence server uses this site's API server-to-server with `Authorization: Bearer <ADMIN_API_TOKEN>` (its `SUBSCRIPTION_API_TOKEN`) to look up a device (`GET /users?search=`), register it (`POST /users`, never changing an existing user; an email already used by another device is refused) and activate it on approval (`PATCH /users/:id/subscription`). Suspending a user here takes effect at the device's next status check.
 
-It checks status at startup, before each search, and after applying, and never caches status as authority, so a status change is picked up at the next check.
-
-**The gap.** The current desktop build does **not** call any of the four `/api/v1` routes, and it cannot be pointed at this site as-is: this site (as specified) has no `/api/license` route and does not sign responses with the Lead Getter licence key. Suspending a user here therefore does **not** yet affect the desktop app. Closing the gap needs one of these decisions, none of which I made on my own because each conflicts with an instruction for this task:
-
-1. **Add Lead Getter's existing status route to this site**: device-signed `GET /api/license` reading the `subscriptions` table, signed with `LICENSE_PRIVATE_KEY`, mapping `effectiveStatus` `active` → `active`, `expired` → `expired`, and `inactive`/`suspended` → a non-active state. No desktop change needed (only `license-config.json`'s `serverUrl` set to this domain and the installers rebuilt). Conflicts with "only these four APIs / no licence-validation endpoints". Note that the free-trial and application routes would also need a home.
-2. **Have Lead Getter's own licence server (`chrom-lead/server`) read this MySQL database** for subscription state. No desktop change, but it modifies the Lead Getter codebase's server.
-3. **Change the desktop app to call this API.** Excluded by the task, and not safe with these routes: they need admin credentials, which can't be shipped inside an app.
-
-When mapping `suspended` into Lead Getter's current status format: the app treats any `state` other than `active` as no subscription, but it still allows a user's remaining free trial searches (up to 3 per computer), and it has no message specific to suspension.
+**Routing.** nginx's `location /lead-getter/` (lead-getter `server/deploy/nginx-lead-getter.conf`) sends these requests to the licence server (port 8787). Requests for `/lead-getter/*` that reach this app instead are forwarded to `LEAD_GETTER_UPSTREAM` (default `http://127.0.0.1:8787`) without this site's admin login, and without any `Authorization` or `Cookie` header. Every other path on this site keeps the admin login. If the licence server is down, `/lead-getter/*` answers `502 { "error": { "code": "licence_server_unavailable" } }`.

@@ -15,6 +15,7 @@ API reference, status values, database schema and the Lead Getter integration no
 src/server.js              startup: env → database connection → HTTP (port 3060)
 src/app.js                 routes, validation, error handling
 src/auth.js                admin authorization (Basic / Bearer), CSRF and brute-force protection
+src/lead-getter.js         forwards /lead-getter/* to the Lead Getter licence server (no admin login)
 src/users.js               user and subscription queries (Prisma)
 prisma/schema.prisma       database schema (applied with prisma db push)
 prisma/seed.js             initial user (npx prisma db seed)
@@ -31,6 +32,7 @@ test/                      API tests against a real MySQL database
 - Credentials and database settings exist only in server environment variables (`.env`, never committed). The page's JavaScript contains no secrets. Logged errors have the database password removed.
 - Basic-authorized changes must come from the site's own origin (CSRF protection); 10 failed sign-ins lock an IP out for 15 minutes; strict Content-Security-Policy, `X-Frame-Options: DENY`, `no-store` caching, `noindex`.
 - **Serve it over HTTPS only** — Basic auth sends the password with every request.
+- **`/lead-getter/*` is the only path without the admin login.** It belongs to the Lead Getter licence server and is forwarded to it unchanged (`LEAD_GETTER_UPSTREAM`); that server authenticates every desktop request with the device's own Ed25519 signature (timestamp, single-use nonce) and applies its own limits. Admin credentials and cookies are never forwarded, and nothing under `/lead-getter` reaches this site's admin API.
 
 ## Environment variables (`.env`)
 
@@ -43,6 +45,7 @@ test/                      API tests against a real MySQL database
 | `PORT`, `HOST` | no | `3060`, `0.0.0.0` | Listen address (`HOST=127.0.0.1` if only the reverse proxy should reach it) |
 | `PUBLIC_ORIGIN` | no | `https://subscription.axorawebsolutions.com` | Allowed origin for changes |
 | `TRUST_PROXY` | behind a proxy | `1` | Real client IP / HTTPS detection behind nginx, cPanel, Cloudflare |
+| `LEAD_GETTER_UPSTREAM` | no | `http://127.0.0.1:8787` (default) | Lead Getter licence server that `/lead-getter/*` is forwarded to; `off` disables |
 | `SEED_USER_ID`, `SEED_USER_EMAIL` | for the seed | `Ab3_-xY9…`, `owner@example.com` | Initial user created by `npx prisma db seed` |
 
 Copy `.env.example` to `.env` and fill it in. Variables set by the hosting environment take precedence over `.env`.
@@ -76,6 +79,15 @@ pm2 restart axora-subscriptions
 - `npx prisma db push` compares `prisma/schema.prisma` with the database and applies only the difference. If a change would lose data, Prisma stops and asks; **don't** pass `--accept-data-loss` or `--force-reset` on the production database.
 - The seed is safe to re-run: it creates nothing if a user with that ID or email already exists. Leave `SEED_USER_*` empty and it does nothing.
 - npm scripts with the same commands: `npm run db:generate`, `npm run db:push`, `npm run seed`, `npm start`.
+
+### Lead Getter desktop app (`/lead-getter`)
+
+Installed Lead Finder apps use `https://subscription.axorawebsolutions.com/lead-getter` (their `license-config.json`). That address is served by the **Lead Getter licence server** (the lead-getter repository's `server/`, deployed with its `server/deploy/install.sh` on this machine, port 8787), which in turn uses this site's API with `SUBSCRIPTION_API_TOKEN` = this site's `ADMIN_API_TOKEN` (server to server only).
+
+- With nginx's `location /lead-getter/` (lead-getter `server/deploy/nginx-lead-getter.conf`), requests go to the licence server directly.
+- Without it, they reach this app, which forwards them to `LEAD_GETTER_UPSTREAM`. If the licence server isn't running, the desktop app gets `502 licence_server_unavailable` (not this site's login).
+
+Check from anywhere: `curl https://subscription.axorawebsolutions.com/lead-getter/health` must answer `{"ok":true}`, and `/lead-getter/api/plans` the plan list.
 
 ### Case-sensitive user IDs (one-time, recommended)
 

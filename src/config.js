@@ -37,6 +37,21 @@ function checkDatabaseUrl(value) {
   return value;
 }
 
+// Where /lead-getter/* is forwarded (the Lead Getter licence server);
+// "off" turns forwarding off.
+function leadGetterUpstream(value) {
+  if (value === undefined || value === '') return 'http://127.0.0.1:8787';
+  if (/^off$/i.test(value)) return null;
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('LEAD_GETTER_UPSTREAM must be a URL such as http://127.0.0.1:8787, or "off"');
+  }
+  if (!/^https?:$/.test(url.protocol) || url.pathname.replace(/\/+$/, '') || url.search) throw new Error('LEAD_GETTER_UPSTREAM must be http(s)://host:port with no path, or "off"');
+  return url.origin;
+}
+
 function loadConfig(env = process.env) {
   const missing = ['ADMIN_USERNAME', 'ADMIN_PASSWORD'].filter((k) => !env[k]);
   if (missing.length) throw new Error(`Missing environment variables: ${missing.join(', ')}`);
@@ -49,6 +64,7 @@ function loadConfig(env = process.env) {
     trustProxy: env.TRUST_PROXY ? (/^\d+$/.test(env.TRUST_PROXY) ? Number(env.TRUST_PROXY) : bool(env.TRUST_PROXY, false)) : false,
     admin: { username: env.ADMIN_USERNAME, password: env.ADMIN_PASSWORD, apiToken: env.ADMIN_API_TOKEN || '' },
     databaseUrl: checkDatabaseUrl(env.DATABASE_URL),
+    leadGetterUpstream: leadGetterUpstream(env.LEAD_GETTER_UPSTREAM),
   };
 }
 
