@@ -6,6 +6,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 const STATUS_LABEL = { active: 'Active', expired: 'Expired', suspended: 'Suspended', inactive: 'Inactive' };
+const PLAN_OPTIONS = [
+  ['monthly', 'Monthly · 100 leads/day'],
+  ['six_months', 'Six Months · 250 leads/day'],
+  ['lifetime', 'One-Time · unlimited'],
+  ['free', 'Free · 5 + 5 leads/day'],
+];
+const PLAN_NAME = { free: 'Free', monthly: 'Monthly', six_months: 'Six Months', lifetime: 'One-Time' };
+// The duration that goes with a plan in the Activate dialog.
+const PLAN_DURATION = { monthly: '1', six_months: '6', lifetime: 'never', free: 'never' };
+
 const ID_PATTERN = '[A-Za-z0-9_\\-]{3,64}';
 
 async function api(method, path, body) {
@@ -61,6 +71,7 @@ function useNotice() {
 
 function ActivateDialog({ user, onClose, onDone }) {
   const ref = useRef(null);
+  const [plan, setPlan] = useState('monthly');
   const [duration, setDuration] = useState('1');
   const [date, setDate] = useState(() => ymd(addMonths(new Date(), 1)));
   const [error, setError] = useState('');
@@ -70,6 +81,7 @@ function ActivateDialog({ user, onClose, onDone }) {
     if (user && !ref.current.open) ref.current.showModal();
     if (!user && ref.current.open) ref.current.close();
     if (user) {
+      setPlan('monthly');
       setDuration('1');
       setDate(ymd(addMonths(new Date(), 1)));
       setError('');
@@ -86,7 +98,7 @@ function ActivateDialog({ user, onClose, onDone }) {
     if (exp !== null && Date.parse(exp) <= Date.now()) return setError('The expiry date must be in the future.');
     setBusy(true);
     try {
-      const { user: updated } = await api('PATCH', `/users/${encodeURIComponent(user.id)}/subscription`, { status: 'active', expiresAt: exp });
+      const { user: updated } = await api('PATCH', `/users/${encodeURIComponent(user.id)}/subscription`, { status: 'active', expiresAt: exp, plan });
       await onDone(updated);
     } catch (err) {
       setError(err.message);
@@ -100,6 +112,26 @@ function ActivateDialog({ user, onClose, onDone }) {
       <form id="activate-form" method="dialog" noValidate onSubmit={submit}>
         <h2>Activate subscription</h2>
         <p className="muted" id="activate-user">{user ? `${user.email} · ${user.id}` : ''}</p>
+        <label>
+          <span>Plan</span>
+          <select
+            name="plan"
+            value={plan}
+            onChange={(e) => {
+              const v = e.target.value;
+              setPlan(v);
+              const d = PLAN_DURATION[v];
+              setDuration(d);
+              if (Number(d)) setDate(ymd(addMonths(new Date(), Number(d))));
+            }}
+          >
+            {PLAN_OPTIONS.map(([id, label]) => (
+              <option key={id} value={id}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
         <label>
           <span>Duration</span>
           <select
@@ -152,6 +184,15 @@ function ActivateDialog({ user, onClose, onDone }) {
   );
 }
 
+// Today's qualified leads against the plan's daily allowance.
+function usageText(u) {
+  const used = u.usageToday || { maps: 0, facebook: 0 };
+  const d = u.plan?.daily;
+  if (!d) return `${used.maps + used.facebook} today · unlimited`;
+  if (d.total !== undefined) return `${used.maps + used.facebook} / ${d.total} today`;
+  return `Maps ${used.maps}/${d.maps} · Facebook ${used.facebook}/${d.facebook}`;
+}
+
 function Applications({ show, onChange, reloadKey }) {
   const [filter, setFilter] = useState('pending');
   const [apps, setApps] = useState([]);
@@ -192,7 +233,7 @@ function Applications({ show, onChange, reloadKey }) {
   return (
     <section className="card">
       <div className="list-head">
-        <h2>Payment approvals</h2>
+        <h2>Payment approvals (earlier app versions)</h2>
         <select aria-label="Show applications" value={filter} onChange={(e) => setFilter(e.target.value)} className="filter">
           <option value="pending">Pending</option>
           <option value="">All</option>
@@ -327,6 +368,21 @@ export default function Dashboard() {
     }
   }
 
+  async function revoke(u) {
+    if (!confirm(`Revoke the subscription of ${u.email}?\nThey go back to the Free allowance.`)) return;
+    setBusy(u.id);
+    try {
+      await api('PATCH', `/users/${encodeURIComponent(u.id)}/subscription`, { status: 'inactive' });
+      await load();
+      setAppsKey((k) => k + 1);
+      show('success', `Subscription of ${u.email} revoked; they are on Free.`);
+    } catch (err) {
+      show('error', err.message);
+    } finally {
+      setBusy('');
+    }
+  }
+
   async function remove(u) {
     if (!confirm(`Delete ${u.email} (${u.id})?\nThis permanently removes the user and their subscription.`)) return;
     setBusy(u.id);
@@ -397,6 +453,7 @@ export default function Dashboard() {
                 <tr>
                   <th>User ID</th>
                   <th>Email</th>
+                  <th>Plan</th>
                   <th>Status</th>
                   <th>Expires</th>
                   <th className="right">Actions</th>
@@ -411,6 +468,10 @@ export default function Dashboard() {
                         {u.id}
                       </td>
                       <td data-label="Email">{u.email}</td>
+                      <td data-label="Plan">
+                        {u.plan?.name || 'Free'}
+                        <span className="sub">{usageText(u)}</span>
+                      </td>
                       <td data-label="Status">
                         <span className={`badge ${s.effectiveStatus}`}>{STATUS_LABEL[s.effectiveStatus] || s.effectiveStatus}</span>
                       </td>
@@ -425,6 +486,11 @@ export default function Dashboard() {
                           ) : (
                             <button type="button" className="btn small primary" onClick={() => setActivating(u)}>
                               Activate
+                            </button>
+                          )}
+                          {s.status !== 'inactive' && (
+                            <button type="button" className="btn small" disabled={busy === u.id} onClick={() => revoke(u)}>
+                              Revoke
                             </button>
                           )}
                           <button type="button" className="btn small danger" disabled={busy === u.id} onClick={() => remove(u)}>
@@ -452,7 +518,8 @@ export default function Dashboard() {
         onDone={async (updated) => {
           setActivating(null);
           await load();
-          show('success', `Subscription of ${updated.email} activated${updated.subscription.expiresAt ? ` until ${fmtDate(updated.subscription.expiresAt)}` : ' with no expiry'}.`);
+          setAppsKey((k) => k + 1);
+          show('success', `${PLAN_NAME[updated.subscription.plan] || 'Subscription'} activated for ${updated.email}${updated.subscription.expiresAt ? ` until ${fmtDate(updated.subscription.expiresAt)}` : ' with no expiry'}.`);
         }}
       />
     </>

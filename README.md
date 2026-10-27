@@ -4,7 +4,7 @@ One Next.js app (JavaScript, App Router) at `https://subscription.axorawebsoluti
 
 - **Admin dashboard** (`/`): add, search, activate (by duration or expiry date), suspend and delete users; approve or cancel Lead Getter payments.
 - **Admin API** (`/api/v1`): the dashboard's API.
-- **Lead Getter desktop API** (`/lead-getter`): plans, signed subscription status, free trials, payment applications and the emailed Approve/Cancel links. Same URLs, requests and answers as the former standalone licence server, so installed apps need no update.
+- **Lead Getter desktop API** (`/lead-getter`): plans, signed subscription status, activation codes (emailed to `SUBSCRIPTION_ADMIN_EMAIL` only) and the daily qualified-lead allowance (Lead Finder 1.6+). The earlier routes (free trials, payment applications, emailed Approve/Cancel links) still answer for older app versions.
 
 API reference: **[docs/API.md](docs/API.md)**.
 
@@ -47,6 +47,8 @@ The licence server's email settings (`SMTP_*`, `SUBSCRIPTION_ADMIN_EMAIL`, `PAYM
 | `TRUST_PROXY` | behind nginx | `1` |
 | `LICENSE_PRIVATE_KEY`, `SMTP_*`, `SUBSCRIPTION_ADMIN_EMAIL`, `PAYMENT_INSTRUCTIONS` | only if not found automatically | See above |
 | `UPLOAD_DIR` | no | Payment screenshots (default `data/uploads`) |
+| `CREDITS_TIMEZONE` | no | Daily lead allowances reset at midnight here (default `Asia/Karachi`) |
+| `PLAN_*` | no | Prices, durations and daily allowances (defaults: Monthly PKR 3,000 / 1 month / 100 a day; Six Months PKR 10,000 / 6 / 250; One-Time PKR 20,000 / unlimited; Free 5 Google Maps + 5 Facebook). Names: `PLAN_MONTHLY_PRICE`, `PLAN_MONTHLY_MONTHS`, `PLAN_MONTHLY_DAILY_LEADS`, `PLAN_SIX_MONTHS_*`, `PLAN_ONE_TIME_PRICE`, `PLAN_FREE_DAILY_MAPS`, `PLAN_FREE_DAILY_FACEBOOK` |
 | `SEED_USER_ID`, `SEED_USER_EMAIL` | no | Initial user for `npm run seed` |
 
 ### Check after deploying
@@ -78,5 +80,3 @@ test/                tests (need an empty test database)
 ```bash
 TEST_DATABASE_URL=mysql://user:pass@127.0.0.1:3306/axora_subs_test npm test   # drops every table in that database
 ```
-
-`test/compat/compare.js` replays the same desktop sessions against the original standalone licence server and this app and compares every answer (47 checks; all match).

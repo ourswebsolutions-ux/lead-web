@@ -38,6 +38,10 @@ model Subscription {
   expiresAt   DateTime?          @map("expires_at") @db.DateTime(3)
   activatedAt DateTime?          @map("activated_at") @db.DateTime(3)
   suspendedAt DateTime?          @map("suspended_at") @db.DateTime(3)
+  // The plan (free, monthly, six_months, lifetime) its daily lead allowance
+  // comes from. NULL on subscriptions activated before plans were recorded:
+  // the Lead Getter API then infers it (lib/licence/handler.js).
+  plan        String?            @db.VarChar(32)
   updatedAt   DateTime           @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
   user        User               @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Restrict, map: "subscriptions_user_fk")
 
@@ -149,4 +153,82 @@ model AppSetting {
   updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.DateTime(3)
 
   @@map("app_settings")
+}
+
+// --- Activation and daily lead allowance -------------------------------------
+// Device IDs here are plain columns (no foreign key: they must be ascii_bin
+// like licence_devices.id, which prisma/setup.js makes them).
+
+enum LicenceActivationStatus {
+  pending
+  activated
+  cancelled
+  expired
+}
+
+// One activation request: the plan asked for and the current 4-digit code
+// as an HMAC (never the code), which was emailed to the administrator only.
+// open_for holds the device ID while the request is open and is NULL
+// afterwards, so an installation has at most one open request.
+model LicenceActivation {
+  id             String                  @id @db.VarChar(16)
+  deviceId       String                  @map("device_id") @db.VarChar(64)
+  machineId      String                  @map("machine_id") @db.VarChar(80)
+  openFor        String?                 @unique(map: "licence_activations_open") @map("open_for") @db.VarChar(64)
+  plan           String                  @db.VarChar(32)
+  status         LicenceActivationStatus
+  otpHash        String?                 @map("otp_hash") @db.Char(64)
+  otpExpiresAt   DateTime?               @map("otp_expires_at") @db.DateTime(3)
+  otpAttempts    Int                     @default(0) @map("otp_attempts")
+  otpSentAt      DateTime?               @map("otp_sent_at") @db.DateTime(3)
+  otpSends       Int                     @default(0) @map("otp_sends")
+  otpWindowStart DateTime?               @map("otp_window_start") @db.DateTime(3)
+  createdAt      DateTime                @map("created_at") @db.DateTime(3)
+  activatedAt    DateTime?               @map("activated_at") @db.DateTime(3)
+
+  @@index([deviceId, createdAt], map: "licence_activations_device")
+  @@map("licence_activations")
+}
+
+// Daily allowance counters: one per account (device:<id> for paid plans,
+// machine:<hash> for Free), day (YYYY-MM-DD in CREDITS_TIMEZONE) and bucket
+// (total, or maps/facebook on Free).
+model LicenceCreditUsage {
+  account String @db.VarChar(100)
+  day     String @db.Char(10)
+  bucket  String @db.VarChar(16)
+  used    Int    @default(0)
+
+  @@id([account, day, bucket])
+  @@map("licence_credit_usage")
+}
+
+// Every lead charged, once per account: the same lead (a hash the desktop
+// app makes from the phone number or listing) is never charged again.
+model LicenceCreditLead {
+  account   String   @db.VarChar(100)
+  leadKey   String   @map("lead_key") @db.Char(64)
+  day       String   @db.Char(10)
+  bucket    String   @db.VarChar(16)
+  source    String   @db.VarChar(16)
+  deviceId  String   @map("device_id") @db.VarChar(64)
+  createdAt DateTime @map("created_at") @db.DateTime(3)
+
+  @@id([account, leadKey])
+  @@index([account, day], map: "licence_credit_leads_day")
+  @@map("licence_credit_leads")
+}
+
+// Administrative and activation actions, newest last.
+model LicenceAuditLog {
+  id      Int      @id @default(autoincrement())
+  at      DateTime @db.DateTime(3)
+  actor   String   @db.VarChar(100)
+  action  String   @db.VarChar(40)
+  target  String   @db.VarChar(100)
+  details String?  @db.Text
+
+  @@index([at], map: "licence_audit_log_at")
+  @@index([target], map: "licence_audit_log_target")
+  @@map("licence_audit_log")
 }

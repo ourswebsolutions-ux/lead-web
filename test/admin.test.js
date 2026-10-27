@@ -83,7 +83,7 @@ test('admin API against MySQL', { skip }, async (t) => {
     const r = await add({ id: DEVICE_ID, email: '  Alice@Example.com ' });
     assert.equal(r.status, 201);
     assert.deepEqual(Object.keys(r.data.user), ['id', 'email', 'createdAt', 'updatedAt', 'subscription']);
-    assert.deepEqual(Object.keys(r.data.user.subscription), ['status', 'effectiveStatus', 'expiresAt', 'activatedAt', 'suspendedAt', 'updatedAt']);
+    assert.deepEqual(Object.keys(r.data.user.subscription), ['status', 'effectiveStatus', 'expiresAt', 'activatedAt', 'suspendedAt', 'plan', 'updatedAt']);
     assert.equal(r.data.user.email, 'alice@example.com');
     assert.deepEqual([r.data.user.subscription.status, r.data.user.subscription.effectiveStatus, r.data.user.subscription.expiresAt], ['inactive', 'inactive', null]);
     assert.equal((await add({ id: 'user-2', email: 'bob@example.com' })).status, 201);

@@ -23,7 +23,7 @@ const ORIGINAL_PLANS = {
   plans: [
     { id: 'monthly', name: 'Monthly', priceLabel: 'PKR 3,000', price: 3000, currency: 'PKR', months: 1, duration: '1 month' },
     { id: 'six_months', name: 'Six Months', priceLabel: 'PKR 10,000', price: 10000, currency: 'PKR', months: 6, duration: '6 months' },
-    { id: 'lifetime', name: 'Lifetime', priceLabel: 'PKR 20,000', price: 20000, currency: 'PKR', months: null, duration: 'One-time payment, never expires' },
+    { id: 'lifetime', name: 'One-Time', priceLabel: 'PKR 20,000', price: 20000, currency: 'PKR', months: null, duration: 'One-time payment, never expires' },
   ],
   paymentMethods: [
     { id: 'nayapay', name: 'NayaPay', account: '03245237429' },
@@ -101,7 +101,11 @@ test('licence API', { skip }, async (t) => {
     assert.equal(r.headers.get('cache-control'), 'no-store');
     r = await get('/api/plans');
     assert.equal(r.status, 200);
-    assert.equal(r.text, JSON.stringify(ORIGINAL_PLANS));
+    // Every field earlier app versions read is unchanged (One-Time is the
+    // new name of Lifetime); the daily allowance and Free plan are additions.
+    const got = JSON.parse(r.text);
+    assert.deepEqual(got.plans.map(({ daily, ...p }) => p), ORIGINAL_PLANS.plans);
+    for (const k of ['paymentMethods', 'paymentInstructions', 'trialSearches']) assert.deepEqual(got[k], ORIGINAL_PLANS[k]);
     assert.equal(r.headers.get('www-authenticate'), null);
   });
 
@@ -131,8 +135,10 @@ test('licence API', { skip }, async (t) => {
   await t.test('signed status of a new device: same fields and values as the original', async () => {
     const d = device();
     const p = await status(d);
-    assert.deepEqual(Object.keys(p), ['v', 'deviceId', 'nonce', 'serverTime', 'subscription', 'registration', 'application', 'pendingApplications', 'trial']);
-    assert.equal(p.v, 1);
+    // Every version 1 field (what earlier app versions read), then the
+    // daily allowance and activation (test/activation.test.js).
+    assert.deepEqual(Object.keys(p), ['v', 'deviceId', 'nonce', 'serverTime', 'subscription', 'registration', 'application', 'pendingApplications', 'trial', 'plan', 'credits', 'activation']);
+    assert.equal(p.v, 2);
     assert.equal(p.serverTime, clock.toISOString());
     assert.deepEqual(p.subscription, { state: 'none' });
     assert.deepEqual(p.registration, { state: 'no_email' });

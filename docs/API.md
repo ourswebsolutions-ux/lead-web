@@ -76,10 +76,16 @@ Deletes the user and their subscription row.
 
 Activate:
 ```json
-{ "status": "active", "expiresAt": "2026-12-21T23:59:59Z" }
+{ "status": "active", "expiresAt": "2026-12-21T23:59:59Z", "plan": "monthly" }
 ```
 - `expiresAt` is required: an ISO 8601 date-time **with timezone** (`Z` or `±hh:mm`) in the future, or `null` for no expiry (lifetime).
+- `plan` (optional): `free`, `monthly`, `six_months` or `lifetime`, the plan the Lead Getter daily allowance comes from. Without it the current plan is kept.
 - Activating sets `activatedAt` to now and clears `suspendedAt`. Activating an already active user replaces the expiry.
+
+Revoke (back to the Free allowance):
+```json
+{ "status": "inactive" }
+```
 
 Suspend:
 ```json
@@ -94,7 +100,9 @@ Response:
 ```
 (`status` here is the resulting `effectiveStatus`.)
 
-Errors: `400 invalid_status`, `400 expiry_required`, `400 invalid_expiry`, `400 expiry_in_past`, `400 unexpected_expiry`, `400 user_id_mismatch` (an `id` in the body differs from the URL), `400 invalid_user_id`, `404 user_not_found`.
+Every change here is recorded in the audit log (`licence_audit_log`) with the signed-in administrator.
+
+Errors: `400 invalid_status`, `400 invalid_plan`, `400 unexpected_plan`, `400 expiry_required`, `400 invalid_expiry`, `400 expiry_in_past`, `400 unexpected_expiry`, `400 user_id_mismatch` (an `id` in the body differs from the URL), `400 invalid_user_id`, `404 user_not_found`.
 
 ### Payment applications (Lead Getter)
 
@@ -133,7 +141,7 @@ All errors are JSON:
 
 ## Database schema (MySQL / MariaDB)
 
-Defined in [prisma/schema.prisma](../prisma/schema.prisma) and created by `npm run build` / `npm run dev` ([prisma/setup.js](../prisma/setup.js), additions only). The ID columns use the case-sensitive `ascii_bin` collation, which setup applies since Prisma can't express collations. The desktop API's tables (`licence_devices`, `licence_applications`, `licence_action_tokens`, `licence_trials`, `licence_seen_requests`, `licence_signing_keys`) and `app_settings` are described in the schema file.
+Defined in [prisma/schema.prisma](../prisma/schema.prisma) and created by `npm run build` / `npm run dev` ([prisma/setup.js](../prisma/setup.js), additions only). The ID columns use the case-sensitive `ascii_bin` collation, which setup applies since Prisma can't express collations. The desktop API's tables (`licence_devices`, `licence_applications`, `licence_action_tokens`, `licence_trials`, `licence_seen_requests`, `licence_signing_keys`, `licence_activations`, `licence_credit_usage`, `licence_credit_leads`, `licence_audit_log`) and `app_settings` are described in the schema file.
 
 ```sql
 users (
@@ -147,6 +155,7 @@ subscriptions (
   expires_at    DATETIME(3) NULL,                  -- UTC; NULL while active = no expiry
   activated_at  DATETIME(3) NULL,
   suspended_at  DATETIME(3) NULL,
+  plan          VARCHAR(32) NULL,                  -- free | monthly | six_months | lifetime (daily allowance)
   updated_at    DATETIME(3)
 )
 ```
@@ -165,13 +174,19 @@ Served by this app at `https://subscription.axorawebsolutions.com/lead-getter` (
 | Desktop call | Purpose | Protection |
 |---|---|---|
 | `GET /lead-getter/health` | `{"ok":true}` | Public |
-| `GET /lead-getter/api/plans` | `{ plans, paymentMethods, paymentInstructions, trialSearches }` | Public, read-only |
-| `GET /lead-getter/api/license?nonce=…` | `{ "token": … }`: the device's own status, signed by the server (`v, deviceId, nonce, serverTime, subscription, registration, application, pendingApplications, trial`) | Device signature (`x-lf-key`, `x-lf-ts` ±5 min, `x-lf-nonce`, `x-lf-machine`, `x-lf-sig`); each signature accepted once |
+| `GET /lead-getter/api/plans` | `{ plans (paid), freePlan, paymentMethods, paymentInstructions, trialSearches, timezone }`; each plan has its daily allowance (`daily`: `{ total }`, `{ maps, facebook }` or `null` = unlimited) | Public, read-only |
+| `GET /lead-getter/api/license?nonce=…` | `{ "token": … }`: the device's own status, signed by the server: `v` (2), `deviceId, nonce, serverTime`, the earlier fields (`subscription, registration, application, pendingApplications, trial`) and `plan` (the plan in effect), `credits` (today's allowance: `day, timezone, resetsAt, scope, total, maps, facebook, discovered`), `activation` (the open request: `id, plan, status, code { expiresAt, attemptsLeft, resendAt }`; never the code) | Device signature (`x-lf-key`, `x-lf-ts` ±5 min, `x-lf-nonce`, `x-lf-machine`, `x-lf-sig`); each signature accepted once |
+| `POST /lead-getter/api/activation` | `{ plan }` (`monthly`, `six_months`, `lifetime`): an Activation ID and a 4-digit code, emailed with the plan and Device ID to `SUBSCRIPTION_ADMIN_EMAIL` only. The same plan again keeps the request; another plan replaces it | Device signature; 5 requests per device per day |
+| `POST /lead-getter/api/activation/verify` | `{ code }`: activates the request's plan at once (`{ activated, plan, expiresAt }`). Errors carry `reason`: `invalid` (with `attemptsLeft`), `locked`, `expired`, `used`, `not_open` | Device signature; 5 tries per code, counted before comparing; codes last 24 hours and work once; only an HMAC is stored |
+| `POST /lead-getter/api/activation/resend` | A new code for the open request, to the administrator | Device signature; once a minute, 5 a day |
+| `POST /lead-getter/api/credits/reserve` | `{ source: "maps"\|"facebook", key }` (64 hex: a hash of the lead, never the lead): charges one new qualified lead. `{ granted, duplicate, reason, credits }`; the same lead is never charged twice | Device signature; limits from this site's record of the plan, enforced in one transaction |
 | `POST /lead-getter/api/trial/consume` | One of 3 free searches per computer (`402` when used up) | Device signature |
 | `POST /lead-getter/api/applications` | Apply with a payment screenshot; emails the administrator; registers the device here as an **inactive** user | Device signature; 10 per device per day; PNG/JPEG/WebP ≤ 5 MB |
 | `GET/POST /lead-getter/admin/applications/:id/approve\|cancel`, `…/screenshot`, `/lead-getter/verify-email` | Emailed links | Single-use, expiring tokens |
 
 Errors are `{ "error": "<message>" }` (JSON) under `/lead-getter/api/`, HTML pages elsewhere, exactly as before.
+
+**Daily allowance.** Free: 5 Google Maps + 5 Facebook leads a day per computer (`x-lf-machine`). Monthly: 100 and Six Months: 250 a day, both sources together. One-Time: unlimited. Days end at midnight in `CREDITS_TIMEZONE`. An expired plan falls back to Free; a suspended one gets nothing. Subscriptions activated before plans were recorded take the plan of their approved payment application, or One-Time when they never expire, otherwise Monthly.
 
 **Status values** in the signed token's `subscription.state`: `active`, `expired`, `suspended`, `inactive` (registered, not activated), `none` (not registered) — this site's `effectiveStatus` for that Device ID. Suspending or activating a user here takes effect at the device's next status check.
 

@@ -37,6 +37,15 @@ const ID_COLUMNS = [
   ['licence_devices', 'id', 'licence_applications', 'device_id', 'licence_applications_device_fk', 'RESTRICT'],
 ];
 
+// Device-ID columns without a foreign key: [table, column, definition].
+const PLAIN_ID_COLUMNS = [
+  ['licence_activations', 'device_id', 'VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL'],
+  ['licence_activations', 'open_for', 'VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NULL'],
+  ['licence_credit_usage', 'account', 'VARCHAR(100) CHARACTER SET ascii COLLATE ascii_bin NOT NULL'],
+  ['licence_credit_leads', 'account', 'VARCHAR(100) CHARACTER SET ascii COLLATE ascii_bin NOT NULL'],
+  ['licence_credit_leads', 'device_id', 'VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL'],
+];
+
 function prisma(args, input) {
   try {
     return execFileSync(process.execPath, [PRISMA_CLI, ...args], { env: { ...process.env, PRISMA_HIDE_UPDATE_MESSAGE: '1' }, encoding: 'utf8', input, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -79,6 +88,12 @@ async function caseSensitiveIds(db, log) {
     await db.$executeRawUnsafe(`ALTER TABLE \`${refTable}\` MODIFY \`${refCol}\` VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL`);
     await db.$executeRawUnsafe(`ALTER TABLE \`${refTable}\` ADD CONSTRAINT \`${fk}\` FOREIGN KEY (\`${refCol}\`) REFERENCES \`${table}\` (\`${col}\`) ON DELETE ${onDelete} ON UPDATE RESTRICT`);
     log(`[setup] ${table}.${col} and ${refTable}.${refCol} are now case-sensitive (no rows changed)`);
+  }
+  for (const [table, col, definition] of PLAIN_ID_COLUMNS) {
+    const [row] = await db.$queryRaw`SELECT collation_name AS coll FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = ${table} AND column_name = ${col}`;
+    if (!row || row.coll === 'ascii_bin') continue;
+    await db.$executeRawUnsafe(`ALTER TABLE \`${table}\` MODIFY \`${col}\` ${definition}`);
+    log(`[setup] ${table}.${col} is now case-sensitive (no rows changed)`);
   }
 }
 

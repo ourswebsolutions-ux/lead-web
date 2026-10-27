@@ -40,12 +40,14 @@ test('setup on a database like production: adds only, keeps every row', { skip }
   const logs = [];
   process.env.LICENSE_PRIVATE_KEY = TEST_PRIVATE_KEY_B64;
   await setup({ log: (m) => logs.push(m) });
-  assert.match(logs.join('\n'), /created 7 table\(s\)/);
+  // The licence tables, plus activation requests, the daily allowance and
+  // the audit log; and subscriptions.plan.
+  assert.match(logs.join('\n'), /created 11 table\(s\)/);
   assert.match(logs.join('\n'), /users\.id and subscriptions\.user_id are now case-sensitive/);
   assert.match(logs.join('\n'), /signing key ready/);
   assert.deepEqual(Object.values(await collations()), ['ascii_bin', 'ascii_bin', 'ascii_bin', 'ascii_bin']);
   const user = await prisma.user.findUnique({ where: { id: 'Prod_User-1' }, include: { subscription: true } });
-  assert.deepEqual([user.email, user.subscription.status, user.subscription.expiresAt.toISOString()], ['prod@example.com', 'active', '2027-01-01T00:00:00.000Z']);
+  assert.deepEqual([user.email, user.subscription.status, user.subscription.expiresAt.toISOString(), user.subscription.plan], ['prod@example.com', 'active', '2027-01-01T00:00:00.000Z', null]);
   assert.equal(await prisma.user.count({ where: { id: 'prod_user-1' } }), 0, 'IDs now case-sensitive');
   await assert.rejects(prisma.subscription.create({ data: { userId: 'missing', status: 'active' } }), 'foreign key restored');
 
