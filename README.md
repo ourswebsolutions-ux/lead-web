@@ -10,6 +10,10 @@ API reference: **[docs/API.md](docs/API.md)**.
 
 ## Deploy (VPS + PM2)
 
+**Updating** (every later deploy): `bash scripts/deploy.sh` in the site's folder. It pulls, installs, prepares the database (additions only), builds, restarts PM2 and checks the Lead Finder API.
+
+First install:
+
 ```bash
 cd /path/to/subcription.axorawebsolutions.com
 git pull
